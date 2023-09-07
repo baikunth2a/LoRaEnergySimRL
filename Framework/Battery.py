@@ -13,18 +13,13 @@ class Battery:
         self.delta_time = 0
 
     def charge(self, del_time):
-    # Always add the del_time to the accumulated time.
         self.delta_time += del_time
-        mask = self.solar_data.index.time == pd.Timestamp(self.env.now, unit='s').time()
-        
         try:
-            I, V = self.solar_data[mask].iloc[0][["I_in", "V_in"]]
+            I, V = self.solar_data[self.solar_data.index.time == pd.Timestamp(self.env.now, unit='s').time()].iloc[0][["I_in", "V_in"]]
             self.power = -(I*V)
-            # Use the accumulated delta_time for the integration and then reset it to zero.
             self.state_of_charge = min(self.state_of_charge + (self.power * self.delta_time * self.charging_efficiency), self.capacity)
             self.delta_time = 0
         except IndexError:
-            # If the index is missed, simply pass and keep accumulating the delta_time.
             pass
 
     def discharge(self, energy):

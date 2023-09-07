@@ -66,50 +66,50 @@ class Node:
         self.current_state = NodeState.OFFLINE
         self.lora_param = lora_parameters
         self.payload_size = payload_size
-
         self.prev_power_mW = 0
-
         self.air_interface = air_interface
-
         self.location = location
-
         self.sleep_time = sleep_time
-
         self.change_lora_param = dict()
         self.energy_value = 0
-
         self.lost_packages_time = []
-
         self.power_tracking = {'val': [], 'time': []}
         self.energy_measurements = {'val': [], 'time': []}
         self.state_changes = {'val': [], 'time': []}
         self.energy_tracking = {NodeState(NodeState.SLEEP).name: 0.0, NodeState(NodeState.PROCESS).name: 0.0,
                                 NodeState(NodeState.RX).name: 0.0, NodeState(NodeState.TX).name: 0.0}
-
         self.bytes_sent = 0
-
         self.packet_to_sent = None
-
         self.time_off = dict()
         for ch in LoRaParameters.CHANNELS:
             self.time_off[ch] = 0
-
         self.confirmed_messages = confirmed_messages
-
         self.unique_packet_id = 0
-
         self.battery = battery
 
         #Modified
         self.env.process(self.charge_battery())
     def charge_battery(self):
-        charge_interval = 100  # 100ms
+        charge_interval = 1000  # now 1000ms = 1s
+        points_to_write = []  # store points here
+        write_interval = 10  # decide after how many iterations to write to the database
+        iteration = 0
+
         while True:
             self.battery.charge(charge_interval)
             current_datetime = start_datetime + pd.Timedelta(seconds=self.env.now)
-            point = Point("battery_from_node").tag("node_id", self.id).field("battery_level", float(self.battery.get_state_of_charge())).time(current_datetime, WritePrecision.MS)
-            write_api.write(bucket, org, point)
+            point = Point("battery_from_node_batch").tag("node_id", self.id).field("battery_level", float(self.battery.get_state_of_charge())).time(current_datetime, WritePrecision.MS)
+            
+            points_to_write.append(point)
+            iteration += 1
+
+            # Write to DB less frequently
+            if iteration % write_interval == 0:
+                write_api.write(bucket, org, points_to_write)
+                points_to_write.clear()  # clear the list after writing
+
             yield self.env.timeout(charge_interval)
+
 
     def plot(self, prop_measurements):
         plt.figure()
