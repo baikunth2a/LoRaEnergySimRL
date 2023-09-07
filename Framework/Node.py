@@ -14,9 +14,6 @@ from Framework.Location import Location
 from Simulations.GlobalConfig import *
 import datetime
 from Framework.Battery import Battery
-# from Framework.EnergyDashboard import connection
-import json
-
 
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -25,10 +22,6 @@ org = "Baikuntha"
 bucket = "Thesis"
 influxclient = InfluxDBClient(url="http://localhost:8086", token=token)
 write_api = influxclient.write_api(write_options=SYNCHRONOUS)
-
-
-# mqtt_publish_client = connection("4bb7a758169c470d831f32b10d5fbbad")
-
 
 X = 7
 start_datetime = datetime.datetime.combine(datetime.date.today(), datetime.time(0, 0)) - datetime.timedelta(days=X)
@@ -110,27 +103,12 @@ class Node:
         #Modified
         self.env.process(self.charge_battery())
     def charge_battery(self):
-        # Assuming you have the connection already established
         charge_interval = 100  # 100ms
         while True:
             self.battery.charge(charge_interval)
             current_datetime = start_datetime + pd.Timedelta(seconds=self.env.now)
-            # print(f"Current time: {current_datetime}")
-            
             point = Point("battery_from_node").tag("node_id", self.id).field("battery_level", float(self.battery.get_state_of_charge())).time(current_datetime, WritePrecision.MS)
             write_api.write(bucket, org, point)
-
-            
-            # payload = {
-            #     'time': current_datetime.isoformat(),
-            #     'battery_level': self.battery.get_state_of_charge(),
-            #     'node_id': self.id
-            # }
-            # payload_data = json.dumps(payload)
-            # mqtt_publish_client.publish("battery", payload_data)
-
-
-
             yield self.env.timeout(charge_interval)
 
     def plot(self, prop_measurements):
