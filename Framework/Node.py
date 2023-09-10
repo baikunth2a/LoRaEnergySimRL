@@ -19,12 +19,14 @@ from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 token = "M0lj1uTaCHTJjLKh_QTRlOSb70JG08KHRLcv-D3eFT19k79F1TkajiDAHrslZUBjwUSflaSS4-3TdsiVYBHE5g=="
 org = "Baikuntha"
-bucket = "Thesis"
+bucket = "Battery"
+measurement_name = "Node logs"
 influxclient = InfluxDBClient(url="http://localhost:8086", token=token)
 write_api = influxclient.write_api(write_options=SYNCHRONOUS)
 
-X = 7
-start_datetime = datetime.datetime.combine(datetime.date.today(), datetime.time(0, 0)) - datetime.timedelta(days=X)
+# start_datetime = datetime.datetime.combine(datetime.date.today(), datetime.time(0, 0)) - datetime.timedelta(days=start_offset_day)
+start_datetime = datetime.datetime(2017, 7, 28, 00, 00, 00)
+
 
 class NodeState(Enum):
     OFFLINE = auto()
@@ -37,7 +39,6 @@ class NodeState(Enum):
     RADIO_PRE_RX = auto()
     RADIO_POST_RX = auto()
     PROCESS = auto()
-
 
 class Node:
     def __init__(self, node_id, energy_profile: EnergyProfile, battery:Battery, lora_parameters, sleep_time, process_time, adr, location,
@@ -86,30 +87,29 @@ class Node:
         self.confirmed_messages = confirmed_messages
         self.unique_packet_id = 0
         self.battery = battery
+        self.points_to_write = []  # store points here
 
         #Modified
         self.env.process(self.charge_battery())
+
+    def collect_points(self, message):
+        point = Point(measurement_name).tag("node_id", self.id)\
+            .field("battery_level", float(self.battery.get_state_of_charge()))\
+            .field("State", NodeState(self.current_state).name)\
+            .field("Message", message)\
+            .time(start_datetime + pd.Timedelta(milliseconds=self.env.now), WritePrecision.MS)
+        # print(f"Charge at + {pd.Timedelta(seconds=self.env.now)}: is: {self.battery.get_state_of_charge()}")
+        self.points_to_write.append(point)
+
     def charge_battery(self):
         charge_interval = 1000  # now 1000ms = 1s
-        points_to_write = []  # store points here
-        write_interval = 10  # decide after how many iterations to write to the database
-        iteration = 0
-
         while True:
             self.battery.charge(charge_interval)
-            current_datetime = start_datetime + pd.Timedelta(seconds=self.env.now)
-            point = Point("battery_from_node_batch").tag("node_id", self.id).field("battery_level", float(self.battery.get_state_of_charge())).time(current_datetime, WritePrecision.MS)
-            
-            points_to_write.append(point)
-            iteration += 1
-
-            # Write to DB less frequently
-            if iteration % write_interval == 0:
-                write_api.write(bucket, org, points_to_write)
-                points_to_write.clear()  # clear the list after writing
-
+            self.collect_points("Battery charging")
+            if len(self.points_to_write) > 10:
+                write_api.write(bucket, org, self.points_to_write)
+                self.points_to_write.clear()  # clear the list after writing
             yield self.env.timeout(charge_interval)
-
 
     def plot(self, prop_measurements):
         plt.figure()
@@ -173,6 +173,9 @@ class Node:
             if  PRINT_ENABLED:
                 print('{}: SENDING packet'.format(self.id))
 
+            #DB Log
+            self.collect_points("Packet sending started!")
+            
             self.unique_packet_id += 1
 
             payload_size = self.payload_size
@@ -192,7 +195,10 @@ class Node:
                 print('{}: DONE sending'.format(self.id))
 
             self.num_unique_packets_sent += 1  # at the end to be sure that this packet was tx
-            print(f"Done Sending from node {self.id}: {pd.Timestamp(self.env.now, unit='s').time()}")
+            #DB Log
+            self.collect_points("Done packet sending!")
+            print(f"Done Sending from node {self.id}: {start_datetime + pd.Timedelta(milliseconds=self.env.now)}")
+
 
     # [----JOIN----]        [rx1]
     # computes time spent in different states during join procedure
@@ -207,11 +213,9 @@ class Node:
         return True
 
     def join_tx(self):
-
         if  PRINT_ENABLED:
             print('{}: \t JOIN TX'.format(self.id))
         energy = LoRaParameters.JOIN_TX_ENERGY_MJ
-
         power = (LoRaParameters.JOIN_TX_ENERGY_MJ / LoRaParameters.JOIN_TX_TIME_MS) * 1000
         self.track_power(power)
         yield self.env.timeout(LoRaParameters.JOIN_TX_TIME_MS)
@@ -473,6 +477,7 @@ class Node:
         if self.current_state == new_state:
             ValueError('You can not change state ({}) when the states are the same'.format(NodeState(new_state).name))
         else:
+            self.collect_points(f"State changed from {NodeState(self.current_state).name} to {NodeState(new_state).name}!")
             self.track_state_change(new_state)
             self.track_power(self.prev_power_mW)  # this for figure purposes only
             track_node_state = new_state
@@ -557,7 +562,6 @@ class Node:
         self.energy_measurements['time'].append(self.env.now)
         self.energy_measurements['val'].append(energy_consumed_mJ)
         self.energy_tracking[NodeState(state).name] += energy_consumed_mJ
-        #Modified
         self.battery.discharge(energy_consumed_mJ)
         # print(f'{self.id}: Consumed energy at {state} state is: {energy_consumed_mJ}.')
         # print(f'{self.id}: Energy remaining in battery is: {self.battery.get_state_of_charge()}.')

@@ -20,11 +20,11 @@ rx_measurements = {'pre_mW': 8.2, 'pre_ms': 3.4, 'rx_lna_on_mW': 39,
                    'rx_lna_off_mW': 34,
                    'post_mW': 8.3, 'post_ms': 10.7}
 
-start_time = 10
-endtime = 500
-int_time = 10
+start_time = 0
+day = 1
+endtime = day * 24*60*60*1000
 
-env = simpy.Environment(start_time*3600)
+env = simpy.Environment(start_time)
 
 _sf = np.random.choice(LoRaParameters.SPREADING_FACTORS)
 lora_param = LoRaParameters(freq=np.random.choice(LoRaParameters.DEFAULT_CHANNELS),
@@ -33,7 +33,6 @@ lora_param = LoRaParameters(freq=np.random.choice(LoRaParameters.DEFAULT_CHANNEL
 
 node_location = Location(x=5,y=5,indoor=False)
 gateway_location = Location(x=1,y=1,indoor=False)
-
 
 gateway = Gateway(env, gateway_location, max_snr_adr=True, avg_snr_adr=False)
 air_interface = AirInterface(gateway, PropagationModel.LogShadow(std=7.9), SNRModel(), env)
@@ -52,8 +51,7 @@ node2 = Node(2, EnergyProfile(5.7e-3, 15, tx_power_mW, rx_power=rx_measurements)
             base_station=gateway, env=env, payload_size=8, air_interface=air_interface,
             confirmed_messages=True)
 
-
-env.process(node1.run())
 env.process(node2.run())
-# env.process(battery_charging_process())
-env.run(until=endtime*3600)
+env.process(node1.run())
+env.run(until=endtime)
+node1.plot()

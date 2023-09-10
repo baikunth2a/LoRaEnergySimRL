@@ -1,11 +1,12 @@
 import numpy as np
 
 ############### SIMULATION SPECIFIC PARAMETERS ###############
+start_offset_day = 7
 start_with_fixed_sf = False
 start_sf = 7
 
 no_of_simulation_days = 1
-scaling_factor = 200 #['0.1', '0.5', '1', '1.5', '2']
+scaling_factor = 2 #['0.1', '0.5', '1', '1.5', '2']
 transmission_rate_id = str(scaling_factor)
 # transmission_rate_bit_per_ms = scaling_factor*(12*8)/(60*60*1000)  # 12*8 bits per hour (1 typical packet per hour)
 transmission_rate_bit_per_ms = scaling_factor*(12*8)/(60*60*1000)  # 12*8 bits per one minute (1 typical packet per minute)
