@@ -89,7 +89,8 @@ if __name__ == '__main__':
     # we are not greedy and only use 20% of the available CPUs
     # change this to your liking
     # pool = mp.Pool(math.floor(mp.cpu_count() / 2))
-    pool = mp.Pool(6)
+
+    pool = mp.Pool(10)
     for n_sim in range(num_of_simulations):
         print(f'Simulation #{n_sim}')
         locations = locations_per_simulation[n_sim]
@@ -103,15 +104,15 @@ if __name__ == '__main__':
             for path_loss_variance in path_loss_variances:
                 args.append((locations, payload_size, path_loss_variance, simulation_time,
                              gateway_location, num_nodes,
-                             transmission_rate_bit_per_ms, confirmed_messages, adr))
+                             transmission_rate_bit_per_ms, confirmed_messages, adr, n_sim))
 
         # r_list = results of running the SimulationProcess.run_helper method for each arg in args
         # the SimulationProcess will start the simulation with the given arguments
         # and return the results you want (see above)
         
         # uncomment if you want to run it sequently (to see output in Spyder for instance)
-        # r_list = [SimulationProcess.run_helper(a) for a in args]
-        r_list = pool.map(func=SimulationProcess.run_helper, iterable=args)
+        r_list = [SimulationProcess.run_helper(a) for a in args]
+        # r_list = pool.map(func=SimulationProcess.run_helper, iterable=args)
 
         # process the returned results from SimulationProcess.run_helper
         for _r in r_list:

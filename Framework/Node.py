@@ -17,15 +17,14 @@ from Framework.Battery import Battery
 
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
-token = "M0lj1uTaCHTJjLKh_QTRlOSb70JG08KHRLcv-D3eFT19k79F1TkajiDAHrslZUBjwUSflaSS4-3TdsiVYBHE5g=="
-org = "Baikuntha"
-bucket = "Battery"
-measurement_name = "Node logs"
 influxclient = InfluxDBClient(url="http://localhost:8086", token=token)
 write_api = influxclient.write_api(write_options=SYNCHRONOUS)
 
 # start_datetime = datetime.datetime.combine(datetime.date.today(), datetime.time(0, 0)) - datetime.timedelta(days=start_offset_day)
 start_datetime = datetime.datetime(2017, 7, 28, 00, 00, 00)
+#Make sure to update before last seconds
+end_simulation_datetime = start_datetime + datetime.timedelta(days=no_of_simulation_days) - datetime.timedelta(seconds=5)
+end_time = end_simulation_datetime.timestamp() * 1000
 
 
 class NodeState(Enum):
@@ -39,16 +38,18 @@ class NodeState(Enum):
     RADIO_PRE_RX = auto()
     RADIO_POST_RX = auto()
     PROCESS = auto()
+    LOWBATTERY = auto()
 
 class Node:
     def __init__(self, node_id, energy_profile: EnergyProfile, battery:Battery, lora_parameters, sleep_time, process_time, adr, location,
-                 base_station: Gateway, env, payload_size, air_interface, confirmed_messages=True,
+                 base_station: Gateway, env, payload_size, air_interface, confirmed_messages=True, n_sim=1,
                  massive_mimo_gain=False, number_of_antennas=1):
         self.power_gain = 1
         if massive_mimo_gain:
             self.power_gain = 1/np.sqrt(number_of_antennas)
         self.num_tx_state_changes = 0
         self.total_wait_time_because_dc = 0
+        self.total_wait_time_because_low_battery = 0
         self.num_no_downlink = 0
         self.num_unique_packets_sent = 0
         self.start_device_active = 0
@@ -78,7 +79,7 @@ class Node:
         self.energy_measurements = {'val': [], 'time': []}
         self.state_changes = {'val': [], 'time': []}
         self.energy_tracking = {NodeState(NodeState.SLEEP).name: 0.0, NodeState(NodeState.PROCESS).name: 0.0,
-                                NodeState(NodeState.RX).name: 0.0, NodeState(NodeState.TX).name: 0.0}
+                                NodeState(NodeState.RX).name: 0.0, NodeState(NodeState.TX).name: 0.0, NodeState(NodeState.LOWBATTERY).name: 0.0}
         self.bytes_sent = 0
         self.packet_to_sent = None
         self.time_off = dict()
@@ -88,64 +89,45 @@ class Node:
         self.unique_packet_id = 0
         self.battery = battery
         self.points_to_write = []  # store points here
-
-        #Modified
+        self.low_battery_threshold = 100  # for example 100mJ
         self.env.process(self.charge_battery())
-
+        self.simulation_step = n_sim
+        # self.measurement_name = f"Sim:{self.simulation_step}"
+        self.measurement_name = f"ADR_{adr}_{start_sf}:{self.simulation_step}"
     def collect_points(self, message):
-        point = Point(measurement_name).tag("node_id", self.id)\
+        try:
+            self.power = self.power_tracking['val'][-1]
+        except:
+            self.power = 0
+        point = Point(f'{self.measurement_name}')\
+            .tag("payload", self.payload_size)\
+            .tag("p_loss_v", self.air_interface.prop_model.get_std())\
+            .tag("node_id", self.id)\
+            .tag("power_scaling", self.battery.power_scaling)\
+            .field("distance", Location.distance(self.location, self.base_station.location))\
+            .field("packets_sent", self.packets_sent)\
+            .field("bytes_sent", self.bytes_sent)\
+            .field("num_collided", self.num_collided)\
+            .field('NoDLReceived', self.num_no_downlink)\
             .field("battery_level", float(self.battery.get_state_of_charge()))\
             .field("State", NodeState(self.current_state).name)\
+            .field("power", float(self.power))\
+            .field("Data_rate", self.lora_param.dr)\
             .field("Message", message)\
+            .field("Sleep_time", self.sleep_time)\
             .time(start_datetime + pd.Timedelta(milliseconds=self.env.now), WritePrecision.MS)
         # print(f"Charge at + {pd.Timedelta(seconds=self.env.now)}: is: {self.battery.get_state_of_charge()}")
         self.points_to_write.append(point)
 
     def charge_battery(self):
-        charge_interval = 1000  # now 1000ms = 1s
+        charge_interval = 10000  # now 1000ms = 1s
         while True:
             self.battery.charge(charge_interval)
             self.collect_points("Battery charging")
-            if len(self.points_to_write) > 10:
+            if len(self.points_to_write) > 1000 or self.env.now >= end_time:
                 write_api.write(bucket, org, self.points_to_write)
                 self.points_to_write.clear()  # clear the list after writing
             yield self.env.timeout(charge_interval)
-
-    def plot(self, prop_measurements):
-        plt.figure()
-        # plt.scatter(self.sleep_energy_time, self.sleep_energy_value, label='Sleep Power (mW)')
-        # plt.scatter(self.proc_energy_time, self.proc_energy_value, label='Processing Energy (mW)')
-        # plt.scatter(self.tx_power_time_mW, self.tx_power_value_mW, label='Tx Energy (mW)')
-        plt.subplot(3, 1, 1)
-        plt.plot(self.power_tracking['time'], self.power_tracking['val'], label='Power (mW)')
-
-        plt.subplot(3, 1, 2)
-        plt.plot(self.energy_measurements['time'], self.energy_measurements['val'], label='Energy (mJ)')
-
-        # for lora_param_setting in self.change_lora_param:
-        #    plt.scatter(self.change_lora_param[lora_param_setting],
-        #                np.ones(len(self.change_lora_param[lora_param_setting])) * 140,
-        #                label=lora_param_setting)  # 140 default
-        # value (top of figure)
-
-        plt.title(self.id)
-
-        plt.subplot(3, 1, 3)
-        plt.plot(prop_measurements['time'], prop_measurements['snr'], label='SNR (dBm)')
-        plt.plot(prop_measurements['time'], prop_measurements['rss'], label='RSS (dBm)')
-
-        # ax = plt.subplot(3, 1, 3)
-        # for lora_param_id in self.change_lora_param:
-        #     ax.scatter(self.change_lora_param[lora_param_id], np.ones(len(self.change_lora_param[lora_param_id])))
-        #     ax.annotate(lora_param_id, self.change_lora_param[lora_param_id], np.ones(len(self.change_lora_param[lora_param_id])))
-        # for t in self.lost_packages_time:
-        #     plt.axvspan(t - 1000, t + 1000, facecolor='r', alpha=0.5)
-
-        # Put a legend to the right of the current axis
-        # ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-        plt.legend()
-        # plt.plot(self.power_tracking_time, self.power_tracking_value, label='Power Tracking (mW)')
-        plt.show()
 
     def run(self):
         random_wait = np.random.uniform(0,  MAX_DELAY_START_PER_NODE_MS)
@@ -162,6 +144,17 @@ class Node:
             # added also a random wait to accommodate for any timing issues on the node itself
             random_wait = np.random.randint(0,  MAX_DELAY_BEFORE_SLEEP_MS)
             yield self.env.timeout(random_wait)
+            
+                # Check battery level once after processing
+            if self.battery.get_state_of_charge() < self.low_battery_threshold:
+                # print(f'Low battery at {start_datetime + pd.Timedelta(milliseconds=self.env.now)}')
+                self.change_state(NodeState.LOWBATTERY)
+                
+            # Continue checking and waiting while battery is below the threshold
+            while self.battery.get_state_of_charge() < self.low_battery_threshold:
+                battery_check_interval = 100  # Check battery level after 100ms
+                self.total_wait_time_because_low_battery += battery_check_interval
+                yield self.env.timeout(battery_check_interval)
 
             yield self.env.process(self.sleep())
 
@@ -194,10 +187,10 @@ class Node:
             if  PRINT_ENABLED:
                 print('{}: DONE sending'.format(self.id))
 
-            self.num_unique_packets_sent += 1  # at the end to be sure that this packet was tx
+            self.num_unique_packets_sent += 1  # at the end to be sure that this packet w as tx
             #DB Log
             self.collect_points("Done packet sending!")
-            print(f"Done Sending from node {self.id}: {start_datetime + pd.Timedelta(milliseconds=self.env.now)}")
+            # print(f"Done Sending from node {self.id}: {start_datetime + pd.Timedelta(milliseconds=self.env.now)}")
 
 
     # [----JOIN----]        [rx1]
@@ -269,17 +262,17 @@ class Node:
         #            TX             #
         # fixed energy overhead
         collided = yield self.env.process(self.send_tx(packet))
-        # print('\t Our packet has collided (2)')
 
         #      Received at BS      #
 
         if not collided:
             if  PRINT_ENABLED:
                 print('{}: \t REC at BS'.format(self.id))
-            downlink_message = self.base_station.packet_received(self, packet, self.env.now)
+            downlink_message = self.base_station.packet_received(self, packet, self.measurement_name, self.payload_size, self.battery.power_scaling, self.air_interface.prop_model.get_std(), start_datetime, self.env.now)
         else:
             self.num_collided += 1
             downlink_message = None
+            print('\t Our packet has collided (2)')
 
         yield self.env.process(self.send_rx(self.env, packet, downlink_message))
 
@@ -288,6 +281,7 @@ class Node:
     def process_downlink_message(self, downlink_message, uplink_message):
         changed = False
         if downlink_message is None:
+            self.collect_points("Downlink Packet Lost!")
             ValueError('DL message can not be None')
 
         if downlink_message.meta.is_lost():
@@ -300,12 +294,14 @@ class Node:
                 if  PRINT_ENABLED:
                     print('\t\t Change DR {} to {}'.format(self.lora_param.dr, downlink_message.adr_param['dr']))
                 self.lora_param.change_dr_to(downlink_message.adr_param['dr'])
+                self.collect_points("Data rate changed!")
                 changed = True
             # change tp based on downlink_message['tp']
             if int(self.lora_param.tp) != int(downlink_message.adr_param['tp']):
                 if  PRINT_ENABLED:
                     print('\t\t Change TP {} to {}'.format(self.lora_param.tp, downlink_message.adr_param['tp']))
                 self.lora_param.change_tp_to(downlink_message.adr_param['tp'])
+                self.collect_points("Transmitting power changed!")
                 changed = True
 
         if changed:
@@ -435,6 +431,7 @@ class Node:
         if  PRINT_ENABLED:
             print('{}: START sleeping for {}ms.'.format(self.id, self.sleep_time))
         self.change_state(NodeState.SLEEP)
+        self.collect_points("Sleep time recorded")
         yield self.env.timeout(self.sleep_time)
         if  PRINT_ENABLED:
             print(f'End Sleep of Node {self.id}')
@@ -494,6 +491,17 @@ class Node:
                 # first track otherwise the next state will overwrite this
                 self.track_power(power_consumed_in_state_mW)
                 self.track_energy(NodeState.SLEEP, energy_consumed_in_state_mJ)
+                
+            if self.current_state == NodeState.LOWBATTERY:
+                # if the previous state was low battery
+                # record new energy state
+                time_duration_low_battery_s = (self.env.now - self.lowbattery_start_time) / 1000
+                power_consumed_in_state_mW = self.energy_profile.low_battery_power_mW
+                energy_consumed_in_state_mJ = power_consumed_in_state_mW * time_duration_low_battery_s
+                # first track otherwise the next state will overwrite this
+                self.track_power(power_consumed_in_state_mW)
+                self.track_energy(NodeState.LOWBATTERY, energy_consumed_in_state_mJ)
+
             if new_state == NodeState.RADIO_TX_PREP_TIME_MS:
                 power_consumed_in_state_mW = LoRaParameters.RADIO_TX_PREP_ENERGY_MJ / (
                     LoRaParameters.RADIO_TX_PREP_TIME_MS / 1000)
@@ -521,6 +529,12 @@ class Node:
                 # this is handled when a state is changed
                 self.sleep_start_time = self.env.now
                 power_consumed_in_state_mW = self.energy_profile.sleep_power_mW
+                # we can not yet determine energy consumed
+            elif new_state == NodeState.LOWBATTERY:
+                # only set lowbattery start time
+                # this is handled when a state is changed
+                self.lowbattery_start_time = self.env.now
+                power_consumed_in_state_mW = self.energy_profile.low_battery_power_mW
                 # we can not yet determine energy consumed
             elif new_state == NodeState.PROCESS:
                 energy_consumed_in_state_mJ = (self.process_time / 1000) * self.energy_profile.proc_power_mW
@@ -557,6 +571,7 @@ class Node:
     def track_power(self, power_mW):
         self.power_tracking['time'].append(self.env.now)
         self.power_tracking['val'].append(power_mW)
+        self.collect_points("Power tracking")
 
     def track_energy(self, state: NodeState, energy_consumed_mJ: float):
         self.energy_measurements['time'].append(self.env.now)

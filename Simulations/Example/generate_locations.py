@@ -14,19 +14,15 @@ locations_file = os.path.join("./Simulations/Example/", locations_file)
 
 locations_per_simulation = list()
 
-
 for num_sim in range(num_of_simulations):
     locations = list()
     for i in range(num_locations):
         locations.append(Location(min=0, max=cell_size, indoor=False))
     locations_per_simulation.append(locations)
 
-
 os.makedirs(os.path.dirname(locations_file), exist_ok=True)
 with open(locations_file, 'wb') as f:
     pickle.dump(locations_per_simulation, f)
-
-
 
 # just to test the code
 # Load locations from .pkl file
@@ -51,6 +47,10 @@ plt.legend(handles=[node_scatter, gateway_scatter])
 plt.title("Locations Visualization")
 plt.xlabel("X Coordinate")
 plt.ylabel("Y Coordinate")
+
+# Set axis limits to ensure they go up to cell_size
+plt.xlim(0, cell_size)
+plt.ylim(0, cell_size)
 
 # Save the plot as an image
 plt.grid(False)

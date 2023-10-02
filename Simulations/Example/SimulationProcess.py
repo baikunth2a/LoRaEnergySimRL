@@ -19,29 +19,31 @@ rx_measurements = {'pre_mW': 8.2, 'pre_ms': 3.4, 'rx_lna_on_mW': 39,
 def run_helper(args):
     return run(*args)
 
-def run(locs, p_size, sigma, sim_time, gateway_location, num_nodes, transmission_rate, confirmed_messages, adr):
+def run(locs, p_size, sigma, sim_time, gateway_location, num_nodes, transmission_rate, confirmed_messages, adr, n_sim):
     sim_env = simpy.Environment()
     gateway = Gateway(sim_env, gateway_location, max_snr_adr=True, avg_snr_adr=False)
     nodes = []
     air_interface = AirInterface(gateway, PropagationModel.LogShadow(std=sigma), SNRModel(), sim_env)
 
-    for node_id in range(num_nodes):
-        energy_profile = EnergyProfile(5.7e-3, 15, tx_power_mW,
-                                       rx_power=rx_measurements)
-        _sf = np.random.choice(LoRaParameters.SPREADING_FACTORS)
-        if start_with_fixed_sf:
-            _sf = start_sf
-        lora_param = LoRaParameters(freq=np.random.choice(LoRaParameters.DEFAULT_CHANNELS),
-                                    sf=_sf,
-                                    bw=125, cr=5, crc_enabled=1, de_enabled=0, header_implicit_mode=0, tp=14)
-        node = Node(node_id, energy_profile, Battery(solar_data = dataset, env=sim_env), lora_param, sleep_time=(8 * p_size / transmission_rate),
-                    process_time=5,
-                    adr=adr,
-                    location=locs[node_id],
-                    base_station=gateway, env=sim_env, payload_size=p_size, air_interface=air_interface,
-                    confirmed_messages=confirmed_messages)
-        nodes.append(node)
-        sim_env.process(node.run())
+    for p_scale in battery_scaling:
+        for node_id in range(num_nodes):
+            energy_profile = EnergyProfile(5.7e-3, 15, tx_power_mW,
+                                        rx_power=rx_measurements, low_battery_power=5.7e-9)
+            
+            _sf = np.random.choice(LoRaParameters.SPREADING_FACTORS)
+            if start_with_fixed_sf:
+                _sf = start_sf
+            lora_param = LoRaParameters(freq=np.random.choice(LoRaParameters.DEFAULT_CHANNELS),
+                                        sf=_sf,
+                                        bw=125, cr=5, crc_enabled=1, de_enabled=0, header_implicit_mode=0, tp=14)
+            node = Node(node_id, energy_profile, Battery(solar_data = dataset, env=sim_env, power_scaling=p_scale), lora_param, sleep_time=(8 * p_size / transmission_rate),
+                        process_time=5,
+                        adr=adr,
+                        location=locs[node_id],
+                        base_station=gateway, env=sim_env, payload_size=p_size, air_interface=air_interface,
+                        confirmed_messages=confirmed_messages, n_sim=n_sim)
+            nodes.append(node)
+            sim_env.process(node.run())
         
     sim_env.run(until=sim_time)
 

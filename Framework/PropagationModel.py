@@ -21,6 +21,8 @@ class LogShadow:
             Lpl = 0
         return tp_dBm + self.GL - Lpl
 
+    def get_std(self):
+        return self.std
 
 class COST231:
 

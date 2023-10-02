@@ -6,6 +6,11 @@ from Framework.LoRaPacket import UplinkMessage, DownlinkMetaMessage, DownlinkMes
 from Framework.LoRaParameters import LoRaParameters
 from Simulations.GlobalConfig import *
 
+from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import SYNCHRONOUS
+influxclient = InfluxDBClient(url="http://localhost:8086", token=token)
+write_api = influxclient.write_api(write_options=SYNCHRONOUS)
+
 
 def required_snr(dr):
     req_snr = 0
@@ -26,10 +31,9 @@ def required_snr(dr):
 
     return req_snr
 
-
 class Gateway:
     SENSITIVITY = {6: -121, 7: -126.5, 8: -129, 9: -131.5, 10: -134, 11: -136.5, 12: -139.5}
-
+    
     def __init__(self, env, location, fast_adr_on=False, max_snr_adr=True, min_snr_adr=False, avg_snr_adr=False,
                  adr_margin_db=10):
         self.bytes_received = 0
@@ -56,11 +60,37 @@ class Gateway:
 
         self.prop_measurements = {}
 
-    def packet_received(self, from_node, packet: UplinkMessage, now):
+        self.number_received_bytes = {}
+        self.number_received_packets = {}
+        self.number_weak_packets = {}
+        self.number_lost_packets = {}
+
+
+    def update_datastore(self, measurement_name, payload_size, path_loss, node_id, power_scaling, rss,\
+                             snr, total_lost_packets, byte_received,\
+                                packet_received, total_bytes_received, total_packets_received,\
+                                    total_weak_packets , start_datetime, now):
+            point = Point(f'GW_{measurement_name}')\
+                .tag("payload", payload_size)\
+                .tag("p_loss_v", path_loss)\
+                .tag("node_id", node_id)\
+                .tag("power_scaling", power_scaling)\
+                .field("rss", rss)\
+                .field("snr", snr)\
+                .field("total_lost_packets", total_lost_packets)\
+                .field("byte_received", byte_received)\
+                .field("packet_received", packet_received)\
+                .field("total_bytes_received", total_bytes_received)\
+                .field("total_packets_received", total_packets_received)\
+                .field("total_weak_packets", total_weak_packets)\
+                .time(start_datetime + pd.Timedelta(milliseconds=now), WritePrecision.MS)
+            write_api.write(bucket, org, point)
+
+    def packet_received(self, from_node, packet: UplinkMessage, measurement_name, payload_size, power_scaling, path_loss, start_datetime, now):
 
         downlink_meta_msg = DownlinkMetaMessage()
         downlink_msg = DownlinkMessage(dmm=downlink_meta_msg)
-
+        
         """
         The packet is received at the gateway.
         The packet is no longer in the air and has not collided.
@@ -74,9 +104,48 @@ class Gateway:
             self.packet_num_received_from[from_node.id] = 0
             self.distinct_bytes_received_from[from_node.id] = 0
 
+        #Modified
+        if power_scaling not in self.number_weak_packets:
+            self.number_weak_packets[power_scaling] = {}
+        if payload_size not in self.number_weak_packets[power_scaling]:
+            self.number_weak_packets[power_scaling][payload_size] = {}
+        if from_node.id not in self.number_weak_packets[power_scaling][payload_size]:
+            self.number_weak_packets[power_scaling][payload_size][from_node.id] = 0
+
+        if power_scaling not in self.number_received_bytes:
+            self.number_received_bytes[power_scaling] = {}
+        if payload_size not in self.number_received_bytes[power_scaling]:
+            self.number_received_bytes[power_scaling][payload_size] = {}
+        if from_node.id not in self.number_received_bytes[power_scaling][payload_size]:
+            self.number_received_bytes[power_scaling][payload_size][from_node.id] = 0
+
+        if power_scaling not in self.number_received_packets:
+            self.number_received_packets[power_scaling] = {}
+        if payload_size not in self.number_received_packets[power_scaling]:
+            self.number_received_packets[power_scaling][payload_size] = {}
+        if from_node.id not in self.number_received_packets[power_scaling][payload_size]:
+            self.number_received_packets[power_scaling][payload_size][from_node.id] = 0
+
+        if power_scaling not in self.number_lost_packets:
+            self.number_lost_packets[power_scaling] = {}
+        if payload_size not in self.number_lost_packets[power_scaling]:
+            self.number_lost_packets[power_scaling][payload_size] = {}
+        if from_node.id not in self.number_lost_packets[power_scaling][payload_size]:
+            self.number_lost_packets[power_scaling][payload_size][from_node.id] = 0
+
+
         if packet.rss < self.SENSITIVITY[packet.lora_param.sf] or packet.snr < required_snr(packet.lora_param.dr):
             # the packet received is to weak
             downlink_meta_msg.weak_packet = True
+
+            #Modified
+            self.number_weak_packets[power_scaling][payload_size][from_node.id] += 1
+            #Update datastore for weak message:
+            self.update_datastore(measurement_name, payload_size, path_loss, node_id = from_node.id, power_scaling=power_scaling, rss=float(packet.rss),\
+                             snr=float(packet.snr), total_lost_packets=self.number_lost_packets[power_scaling][payload_size][from_node.id], byte_received = self.number_received_bytes[power_scaling][payload_size][from_node.id],\
+                                packet_received=self.number_received_packets[power_scaling][payload_size][from_node.id], total_bytes_received = self.bytes_received, total_packets_received = self.num_of_packet_received,\
+                                    total_weak_packets = self.number_weak_packets[power_scaling][payload_size][from_node.id], start_datetime = start_datetime, now=now)
+
             self.uplink_packet_weak.append(packet)
             return downlink_msg
 
@@ -119,6 +188,10 @@ class Gateway:
         if schedule_dl and not possible_rx1 and not possible_rx2:
             lost = True
             self.dl_not_schedulable += 1
+
+            #Modified
+            self.number_lost_packets[power_scaling][payload_size][from_node.id] += 1
+
         elif schedule_dl:
             if packet.lora_param.dr > 3:
                 # we would like sending on the same channel with the same DR
@@ -147,6 +220,15 @@ class Gateway:
                 self.time_off[time_off_for_channel] = time_off_till
         else:
             downlink_meta_msg.dc_limit_reached = True
+
+        self.number_received_bytes[power_scaling][payload_size][from_node.id] += packet.payload_size
+        self.number_received_packets[power_scaling][payload_size][from_node.id] += 1
+
+        self.update_datastore(measurement_name, payload_size, path_loss, node_id = from_node.id, power_scaling=power_scaling, rss=float(packet.rss),\
+                             snr=float(packet.snr), total_lost_packets=self.number_lost_packets[power_scaling][payload_size][from_node.id], byte_received = self.number_received_bytes[power_scaling][payload_size][from_node.id],\
+                                packet_received=self.number_received_packets[power_scaling][payload_size][from_node.id], total_bytes_received = self.bytes_received, total_packets_received = self.num_of_packet_received,\
+                                    total_weak_packets = self.number_weak_packets[power_scaling][payload_size][from_node.id], start_datetime = start_datetime, now=now)
+
         return downlink_msg
 
     def check_duty_cycle(self, payload_size, sf, freq, now) -> (bool, float, float):
@@ -161,6 +243,7 @@ class Gateway:
         time_off = time_on_air / LoRaParameters.CHANNEL_DUTY_CYCLE[freq] - time_on_air
         off_time_till = self.env.now + time_off
         return True, time_on_air, off_time_till
+
 
     def adr(self, packet: UplinkMessage):
         history = self.packet_history[packet.node.id]
