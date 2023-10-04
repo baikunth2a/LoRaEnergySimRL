@@ -23,7 +23,7 @@ def time_on_air(payload_size: int, lora_param: LoRaParameters):
 
 class UplinkMessage:
     def __init__(self, node, start_on_air, payload_size,  id, collided=False,
-                 confirmed_message=True, unique_msg = True):
+                 confirmed_message=True, unique_msg = True, energy_budget_flag = False, energy_budget = None):
         self. is_confirmed_message=confirmed_message
         self.node = node
         self.start_on_air = start_on_air
@@ -41,6 +41,10 @@ class UplinkMessage:
         if self.is_confirmed_message:
             self.downlink_message = None
         self.id = id
+
+        #Modified
+        self.energy_budget_flag = energy_budget_flag
+        self.energy_budget = energy_budget
 
     # this function computes the airtime of a packet
     # for a packet with `payloadSize` in bytes

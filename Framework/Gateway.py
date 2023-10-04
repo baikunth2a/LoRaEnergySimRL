@@ -11,7 +11,6 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 influxclient = InfluxDBClient(url="http://localhost:8086", token=token)
 write_api = influxclient.write_api(write_options=SYNCHRONOUS)
 
-
 def required_snr(dr):
     req_snr = 0
     if dr == 5:
@@ -60,10 +59,12 @@ class Gateway:
 
         self.prop_measurements = {}
 
+        #Modified
         self.number_received_bytes = {}
         self.number_received_packets = {}
         self.number_weak_packets = {}
         self.number_lost_packets = {}
+        self.energy_budget_history = dict()
 
 
     def update_datastore(self, measurement_name, payload_size, path_loss, node_id, power_scaling, rss,\
@@ -86,10 +87,14 @@ class Gateway:
                 .time(start_datetime + pd.Timedelta(milliseconds=now), WritePrecision.MS)
             write_api.write(bucket, org, point)
 
-    def packet_received(self, from_node, packet: UplinkMessage, measurement_name, payload_size, power_scaling, path_loss, start_datetime, now):
+    def packet_received(self, from_node, packet: UplinkMessage, measurement_name, power_scaling, start_datetime, now):
 
         downlink_meta_msg = DownlinkMetaMessage()
         downlink_msg = DownlinkMessage(dmm=downlink_meta_msg)
+        payload_size = packet.payload_size
+        path_loss = packet.node.air_interface.prop_model.get_std()
+        from_node = packet.node.id
+
         
         """
         The packet is received at the gateway.
@@ -99,39 +104,46 @@ class Gateway:
         In addition, the gateway determines the best suitable DL Rx window.
         """
 
-        if from_node.id not in self.packet_history:
-            self.packet_history[from_node.id] = deque(maxlen=20)
-            self.packet_num_received_from[from_node.id] = 0
-            self.distinct_bytes_received_from[from_node.id] = 0
+        if from_node not in self.packet_history:
+            self.packet_history[from_node] = deque(maxlen=20)
+            self.packet_num_received_from[from_node] = 0
+            self.distinct_bytes_received_from[from_node] = 0
 
         #Modified
+        if from_node not in self.energy_budget_history:
+            self.energy_budget_history[from_node] = deque(maxlen=20)
+
+        self.energy_budget_history[from_node].append(packet.energy_budget)
+
+        # print(f"Received packet from node {packet.node.id} or {from_node} with energy budget: {packet.energy_budget}")
+
         if power_scaling not in self.number_weak_packets:
-            self.number_weak_packets[power_scaling] = {}
-        if payload_size not in self.number_weak_packets[power_scaling]:
-            self.number_weak_packets[power_scaling][payload_size] = {}
-        if from_node.id not in self.number_weak_packets[power_scaling][payload_size]:
-            self.number_weak_packets[power_scaling][payload_size][from_node.id] = 0
+            self.number_weak_packets = {}
+        if payload_size not in self.number_weak_packets:
+            self.number_weak_packets[payload_size] = {}
+        if from_node not in self.number_weak_packets[payload_size]:
+            self.number_weak_packets[payload_size][from_node] = 0
 
         if power_scaling not in self.number_received_bytes:
-            self.number_received_bytes[power_scaling] = {}
-        if payload_size not in self.number_received_bytes[power_scaling]:
-            self.number_received_bytes[power_scaling][payload_size] = {}
-        if from_node.id not in self.number_received_bytes[power_scaling][payload_size]:
-            self.number_received_bytes[power_scaling][payload_size][from_node.id] = 0
+            self.number_received_bytes = {}
+        if payload_size not in self.number_received_bytes:
+            self.number_received_bytes[payload_size] = {}
+        if from_node not in self.number_received_bytes[payload_size]:
+            self.number_received_bytes[payload_size][from_node] = 0
 
         if power_scaling not in self.number_received_packets:
-            self.number_received_packets[power_scaling] = {}
-        if payload_size not in self.number_received_packets[power_scaling]:
-            self.number_received_packets[power_scaling][payload_size] = {}
-        if from_node.id not in self.number_received_packets[power_scaling][payload_size]:
-            self.number_received_packets[power_scaling][payload_size][from_node.id] = 0
+            self.number_received_packets = {}
+        if payload_size not in self.number_received_packets:
+            self.number_received_packets[payload_size] = {}
+        if from_node not in self.number_received_packets[payload_size]:
+            self.number_received_packets[payload_size][from_node] = 0
 
         if power_scaling not in self.number_lost_packets:
-            self.number_lost_packets[power_scaling] = {}
-        if payload_size not in self.number_lost_packets[power_scaling]:
-            self.number_lost_packets[power_scaling][payload_size] = {}
-        if from_node.id not in self.number_lost_packets[power_scaling][payload_size]:
-            self.number_lost_packets[power_scaling][payload_size][from_node.id] = 0
+            self.number_lost_packets = {}
+        if payload_size not in self.number_lost_packets:
+            self.number_lost_packets[payload_size] = {}
+        if from_node not in self.number_lost_packets[payload_size]:
+            self.number_lost_packets[payload_size][from_node] = 0
 
 
         if packet.rss < self.SENSITIVITY[packet.lora_param.sf] or packet.snr < required_snr(packet.lora_param.dr):
@@ -139,12 +151,12 @@ class Gateway:
             downlink_meta_msg.weak_packet = True
 
             #Modified
-            self.number_weak_packets[power_scaling][payload_size][from_node.id] += 1
+            self.number_weak_packets[payload_size][from_node] += 1
             #Update datastore for weak message:
-            self.update_datastore(measurement_name, payload_size, path_loss, node_id = from_node.id, power_scaling=power_scaling, rss=float(packet.rss),\
-                             snr=float(packet.snr), total_lost_packets=self.number_lost_packets[power_scaling][payload_size][from_node.id], byte_received = self.number_received_bytes[power_scaling][payload_size][from_node.id],\
-                                packet_received=self.number_received_packets[power_scaling][payload_size][from_node.id], total_bytes_received = self.bytes_received, total_packets_received = self.num_of_packet_received,\
-                                    total_weak_packets = self.number_weak_packets[power_scaling][payload_size][from_node.id], start_datetime = start_datetime, now=now)
+            self.update_datastore(measurement_name, payload_size, path_loss, node_id = from_node, power_scaling=power_scaling, rss=float(packet.rss),\
+                             snr=float(packet.snr), total_lost_packets=self.number_lost_packets[payload_size][from_node], byte_received = self.number_received_bytes[payload_size][from_node],\
+                                packet_received=self.number_received_packets[payload_size][from_node], total_bytes_received = self.bytes_received, total_packets_received = self.num_of_packet_received,\
+                                    total_weak_packets = self.number_weak_packets[payload_size][from_node], start_datetime = start_datetime, now=now)
 
             self.uplink_packet_weak.append(packet)
             return downlink_msg
@@ -153,16 +165,16 @@ class Gateway:
         self.num_of_packet_received += 1
 
         # everytime a distinct message is received (i.e. id is diff from previous message
-        if from_node.id not in self.last_distinct_packets_received_from:
+        if from_node not in self.last_distinct_packets_received_from:
             self.distinct_packets_received += 1
-        elif self.last_distinct_packets_received_from[from_node.id] != packet.id:
+        elif self.last_distinct_packets_received_from[from_node] != packet.id:
             self.distinct_packets_received += 1
-            self.distinct_bytes_received_from[from_node.id] += packet.payload_size
-        self.last_distinct_packets_received_from[from_node.id] = packet.id
+            self.distinct_bytes_received_from[from_node] += packet.payload_size
+        self.last_distinct_packets_received_from[from_node] = packet.id
 
-        self.packet_history[from_node.id].append(packet.snr)
+        self.packet_history[from_node].append(packet.snr)
 
-        if from_node.adr:
+        if from_nodeadr:
             downlink_msg.adr_param = self.adr(packet)
 
         # first compute if DC can be done for RX1 and RX2
@@ -176,9 +188,9 @@ class Gateway:
         if not packet.is_confirmed_message:
             # only schedule DL message if number of received msgs is > 20, i.e. every 20
             schedule_dl = False
-            if self.packet_num_received_from[from_node.id] % 20 == 0:
+            if self.packet_num_received_from[from_node] % 20 == 0:
                 schedule_dl = True
-                self.packet_num_received_from[from_node.id] = 0  # count again
+                self.packet_num_received_from[from_node] = 0  # count again
         else:
             schedule_dl = True
 
@@ -190,7 +202,7 @@ class Gateway:
             self.dl_not_schedulable += 1
 
             #Modified
-            self.number_lost_packets[power_scaling][payload_size][from_node.id] += 1
+            self.number_lost_packets[payload_size][from_node] += 1
 
         elif schedule_dl:
             if packet.lora_param.dr > 3:
@@ -221,13 +233,13 @@ class Gateway:
         else:
             downlink_meta_msg.dc_limit_reached = True
 
-        self.number_received_bytes[power_scaling][payload_size][from_node.id] += packet.payload_size
-        self.number_received_packets[power_scaling][payload_size][from_node.id] += 1
+        self.number_received_bytes[payload_size][from_node] += packet.payload_size
+        self.number_received_packets[payload_size][from_node] += 1
 
-        self.update_datastore(measurement_name, payload_size, path_loss, node_id = from_node.id, power_scaling=power_scaling, rss=float(packet.rss),\
-                             snr=float(packet.snr), total_lost_packets=self.number_lost_packets[power_scaling][payload_size][from_node.id], byte_received = self.number_received_bytes[power_scaling][payload_size][from_node.id],\
-                                packet_received=self.number_received_packets[power_scaling][payload_size][from_node.id], total_bytes_received = self.bytes_received, total_packets_received = self.num_of_packet_received,\
-                                    total_weak_packets = self.number_weak_packets[power_scaling][payload_size][from_node.id], start_datetime = start_datetime, now=now)
+        self.update_datastore(measurement_name, payload_size, path_loss, node_id = from_node, power_scaling=power_scaling, rss=float(packet.rss),\
+                             snr=float(packet.snr), total_lost_packets=self.number_lost_packets[payload_size][from_node], byte_received = self.number_received_bytes[payload_size][from_node],\
+                                packet_received=self.number_received_packets[payload_size][from_node], total_bytes_received = self.bytes_received, total_packets_received = self.num_of_packet_received,\
+                                    total_weak_packets = self.number_weak_packets[payload_size][from_node], start_datetime = start_datetime, now=now)
 
         return downlink_msg
 

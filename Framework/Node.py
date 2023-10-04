@@ -43,7 +43,7 @@ class NodeState(Enum):
 class Node:
     def __init__(self, node_id, energy_profile: EnergyProfile, battery:Battery, lora_parameters, sleep_time, process_time, adr, location,
                  base_station: Gateway, env, payload_size, air_interface, confirmed_messages=True, n_sim=1,
-                 massive_mimo_gain=False, number_of_antennas=1):
+                 massive_mimo_gain=False, number_of_antennas=1, enable_energy_aware = enable_energy_aware):
         self.power_gain = 1
         if massive_mimo_gain:
             self.power_gain = 1/np.sqrt(number_of_antennas)
@@ -87,7 +87,9 @@ class Node:
             self.time_off[ch] = 0
         self.confirmed_messages = confirmed_messages
         self.unique_packet_id = 0
+        
         self.battery = battery
+        self.enable_energy_aware = enable_energy_aware
         self.points_to_write = []  # store points here
         self.low_battery_threshold = 100  # for example 100mJ
         self.env.process(self.charge_battery())
@@ -176,7 +178,7 @@ class Node:
                 payload_size = 5
 
             packet = UplinkMessage(node=self, start_on_air=self.env.now, payload_size=payload_size,
-                                   confirmed_message=self.confirmed_messages, id=self.unique_packet_id)
+                                   confirmed_message=self.confirmed_messages, id=self.unique_packet_id, energy_budget_flag=self.enable_energy_aware, energy_budget=self.battery.get_state_of_charge())
             downlink_message = yield self.env.process(self.send(packet))
             if downlink_message is None:
                 # message is collided and not received at the BS
@@ -268,11 +270,11 @@ class Node:
         if not collided:
             if  PRINT_ENABLED:
                 print('{}: \t REC at BS'.format(self.id))
-            downlink_message = self.base_station.packet_received(self, packet, self.measurement_name, self.payload_size, self.battery.power_scaling, self.air_interface.prop_model.get_std(), start_datetime, self.env.now)
+            downlink_message = self.base_station.packet_received(self, packet, self.measurement_name, self.battery.power_scaling, start_datetime, self.env.now)
         else:
             self.num_collided += 1
             downlink_message = None
-            print('\t Our packet has collided (2)')
+            #print('\t Our packet has collided (2)')
 
         yield self.env.process(self.send_rx(self.env, packet, downlink_message))
 
@@ -392,12 +394,10 @@ class Node:
             yield env.process(self.send_rx_ack(2, packet, rx_on_rx2))
 
     def send_rx_ack(self, rec_window: int, packet: UplinkMessage, ack: bool):
-
         self.change_state(NodeState.RADIO_PRE_RX)
         yield self.env.timeout(self.energy_profile.rx_power['pre_ms'])
 
         if not ack:
-
             if rec_window == 1:
                 rx_time = packet.lora_param.RX_1_NO_ACK_AIR_TIME[packet.lora_param.dr]
                 rx_energy = packet.lora_param.RX_1_NO_ACK_ENERGY_MJ[packet.lora_param.dr]
